@@ -1,42 +1,27 @@
-name: Build & Push BG Remover
+# syntax=docker/dockerfile:1
 
-on:
-  push:
-    branches: [ "main" ]
-  workflow_dispatch:
+# ---------- Stage 1: build image ----------
+FROM python:3.10-slim AS builder
 
-env:
-  IMAGE_NAME: bgremover
-  IMAGE_TAG: 1.5
+# Install rembg con supporto GPU (CUDA 11.8) + pillow
+RUN pip install --no-cache-dir "rembg[gpu]" pillow
 
-jobs:
-  build-push:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
+# ---------- Stage 2: runtime ----------
+FROM nvidia/cuda:11.8.0-runtime-ubuntu22.04
 
-    steps:
-    - name: Checkout
-      uses: actions/checkout@v4
+# Copia i binari Python da builder
+COPY --from=builder /usr/local /usr/local
 
-    - name: Set up QEMU
-      uses: docker/setup-qemu-action@v3
+# Includi tini come init per correttezza dei signal
+RUN apt-get update && apt-get install -y --no-install-recommends tini && \
+    rm -rf /var/lib/apt/lists/*
 
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
+ENV NVIDIA_VISIBLE_DEVICES=all \
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility
 
-    - name: Login to Docker Hub
-      uses: docker/login-action@v3
-      with:
-        username: ${{ secrets.DOCKERHUB_USER }}
-        password: ${{ secrets.DOCKERHUB_TOKEN }}
+# 7000 è la porta che userai in RunPod
+EXPOSE 7000
 
-    - name: Build & Push
-      uses: docker/build-push-action@v5
-      with:
-        context: .
-        push: true
-        tags: ${{ secrets.DOCKERHUB_USER }}/${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
-        cache-from: type=registry,ref=${{ secrets.DOCKERHUB_USER }}/${{ env.IMAGE_NAME }}:cache
-        cache-to: type=registry,ref=${{ secrets.DOCKERHUB_USER }}/${{ env.IMAGE_NAME }}:cache,mode=max
+# Avvia rembg in modalità server GPU
+ENTRYPOINT ["/usr/bin/tini","--"]
+CMD ["rembg","s","-p","7000"]
